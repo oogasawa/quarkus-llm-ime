@@ -27,8 +27,10 @@ public class ImeResource {
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
     public ConvertResponse convert(ConvertRequest request) {
-        String result = conversionService.convert(request.input(), request.context());
-        return new ConvertResponse(result);
+        int n = request.n() != null ? request.n() : 3;
+        var candidates = conversionService.convertCandidates(request.input(), request.context(), n);
+        String output = candidates.isEmpty() ? request.input() : candidates.get(0);
+        return new ConvertResponse(output, candidates);
     }
 
     @POST
@@ -126,8 +128,8 @@ public class ImeResource {
         return new RecordResponse("ok");
     }
 
-    public record ConvertRequest(String input, String context) {}
-    public record ConvertResponse(String output) {}
+    public record ConvertRequest(String input, String context, Integer n) {}
+    public record ConvertResponse(String output, List<String> candidates) {}
     public record CompleteRequest(String context, String partial) {}
     public record CompleteResponse(String completion) {}
     public record MultiConvertRequest(String input, String context, Integer n) {}

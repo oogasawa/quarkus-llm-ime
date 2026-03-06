@@ -67,6 +67,44 @@ public class ConversionService {
         return sb.toString();
     }
 
+    // Pattern to detect prompt echo-back (lines that look like instructions, not candidates)
+    private static final Pattern PROMPT_ECHO = Pattern.compile(
+        "(候補を|出力して|出してください|以下の通り|仮名混じり|漢字に[直変]|カンマ区切り|1行に)");
+
+    // Pattern to strip leading bullet/number markers: "・", "1.", "1)", "①", "- ", "* " etc.
+    private static final Pattern BULLET_PREFIX = Pattern.compile(
+        "^[・\\-\\*●◆▶▷■□◇]\\s*"
+        + "|^[①②③④⑤⑥⑦⑧⑨⑩]\\s*"
+        + "|^\\d+[.\\)\\]、．）】]\\s*");
+
+    // Half-width katakana range
+    private static final Pattern HALFWIDTH_KANA = Pattern.compile("[\\uFF65-\\uFF9F]");
+
+    /**
+     * Filter and clean a single LLM candidate line.
+     * Returns null if the line should be discarded.
+     */
+    private String cleanCandidate(String raw) {
+        if (raw == null) return null;
+        String line = raw.strip();
+        if (line.isEmpty()) return null;
+
+        // Discard lines that echo the prompt
+        if (PROMPT_ECHO.matcher(line).find()) return null;
+
+        // Strip bullet/number prefix
+        line = BULLET_PREFIX.matcher(line).replaceFirst("").strip();
+        if (line.isEmpty()) return null;
+
+        // Discard half-width katakana variants (e.g. ｷｼｬﾉ)
+        if (HALFWIDTH_KANA.matcher(line).find()) return null;
+
+        // Remove spaces between Japanese characters
+        line = SPACE_BETWEEN_JP.matcher(line).replaceAll("$1$2").strip();
+
+        return line.isEmpty() ? null : line;
+    }
+
     // Characters that should never have spaces around them in Japanese text
     private static final String JP_NO_SPACE =
         "\u3000-\u303f"  // CJK punctuation (、。「」等)
@@ -83,6 +121,17 @@ public class ConversionService {
      * @return converted text
      */
     public String convert(String hiragana, String context) {
+        var candidates = convertCandidates(hiragana, context, 3);
+        return candidates.isEmpty() ? hiragana : candidates.get(0);
+    }
+
+    /**
+     * Convert hiragana to kanji-kana mixed text, returning multiple LLM candidates.
+     * Uses n > 1 with temperature > 0 to get diverse results from vLLM.
+     * Each response is parsed line-by-line: prompt echo lines are skipped,
+     * valid candidates are collected.
+     */
+    public List<String> convertCandidates(String hiragana, String context, int n) {
         var messages = new ArrayList<ChatCompletionRequest.Message>();
 
         String history = historyContext();
@@ -95,18 +144,29 @@ public class ConversionService {
         }
         messages.add(new ChatCompletionRequest.Message("user", prompt));
 
-        var request = new ChatCompletionRequest(model, messages, maxTokens, temperature);
+        var request = new ChatCompletionRequest(model, messages, maxTokens, 0.3, n);
 
         try {
             var response = vllmClient.chatCompletions(request);
-            if (response.choices() != null && !response.choices().isEmpty()) {
-                String result = response.choices().get(0).message().content();
-                return normalize(result);
+            var seen = new LinkedHashSet<String>();
+            if (response.choices() != null) {
+                for (var choice : response.choices()) {
+                    String raw = choice.message().content();
+                    if (raw == null) continue;
+                    // Parse all lines: skip prompt echo, extract valid candidates
+                    for (String line : raw.split("\n")) {
+                        String cleaned = cleanCandidate(line);
+                        if (cleaned != null && !cleaned.equals(hiragana)) {
+                            seen.add(cleaned);
+                        }
+                    }
+                }
             }
-            return hiragana;
+            LOG.info("LLM convert candidates for '" + hiragana + "': " + seen);
+            return new ArrayList<>(seen);
         } catch (Exception e) {
             LOG.warning("vLLM request failed: " + e.getMessage());
-            return hiragana;
+            return List.of();
         }
     }
 
@@ -184,11 +244,10 @@ public class ConversionService {
             String raw = response.choices().get(0).message().content();
             var seen = new LinkedHashSet<String>();
             if (raw != null) {
-                for (String line : raw.split("\n")) {
-                    String candidate = line.strip()
-                        .replaceAll("^\\d+[.\\)\\]、．）】]\\s*", "");
-                    candidate = SPACE_BETWEEN_JP.matcher(candidate).replaceAll("$1$2").strip();
-                    if (!candidate.isEmpty()) {
+                // LLM may return newline-separated, comma-separated, or mixed
+                for (String part : raw.split("[,、，\n]")) {
+                    String candidate = cleanCandidate(part);
+                    if (candidate != null) {
                         seen.add(candidate);
                     }
                 }
@@ -337,12 +396,15 @@ public class ConversionService {
         try {
             var response = vllmClient.chatCompletions(request);
             if (response.choices() != null && !response.choices().isEmpty()) {
-                String raw = normalize(response.choices().get(0).message().content());
+                String raw = response.choices().get(0).message().content();
                 var result = new ArrayList<String>();
-                for (String c : raw.split("[,、，]")) {
-                    String trimmed = c.strip();
-                    if (!trimmed.isEmpty()) {
-                        result.add(trimmed);
+                if (raw != null) {
+                    // LLM may return comma-separated or newline-separated candidates
+                    for (String part : raw.split("[,、，\n]")) {
+                        String candidate = cleanCandidate(part);
+                        if (candidate != null) {
+                            result.add(candidate);
+                        }
                     }
                 }
                 if (!result.isEmpty()) {
