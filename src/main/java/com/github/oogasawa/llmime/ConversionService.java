@@ -264,17 +264,20 @@ public class ConversionService {
     public List<String> completeMulti(String context, String partial, int n) {
         var messages = new ArrayList<ChatCompletionRequest.Message>();
 
+        messages.add(new ChatCompletionRequest.Message("system",
+            "You are a text completion engine. "
+            + "Output ONLY the missing continuation of the text — "
+            + "do NOT answer questions, do NOT add greetings, "
+            + "do NOT repeat what the user already typed. "
+            + "Just predict what words come next. Keep it short (under 20 tokens)."));
+
         String prompt;
         if (context != null && context.contains("[CURSOR]")) {
-            // Rich context mode: file head + before cursor + [CURSOR] + after cursor
-            prompt = "以下の文書の[CURSOR]の位置に入る続きの文章を書いてください。"
-                + "[CURSOR]の位置に挿入する文章だけを出力してください。\n\n" + context;
+            prompt = context;
         } else if (partial != null && !partial.isBlank()) {
-            prompt = "以下の文章の続きを書いてください。続きだけを出力してください。\n\n"
-                + context + partial;
+            prompt = (context != null ? context : "") + partial;
         } else {
-            prompt = "以下の文章の続きを書いてください。続きだけを出力してください。\n\n"
-                + context;
+            prompt = (context != null ? context : "");
         }
         messages.add(new ChatCompletionRequest.Message("user", prompt));
 
@@ -313,13 +316,18 @@ public class ConversionService {
     public String complete(String context, String partial) {
         var messages = new ArrayList<ChatCompletionRequest.Message>();
 
+        messages.add(new ChatCompletionRequest.Message("system",
+            "You are a text completion engine. "
+            + "Output ONLY the missing continuation of the text — "
+            + "do NOT answer questions, do NOT add greetings, "
+            + "do NOT repeat what the user already typed. "
+            + "Just predict what words come next. Keep it short (under 20 tokens)."));
+
         String prompt;
         if (partial != null && !partial.isBlank()) {
-            prompt = "以下の文章の続きを書いてください。続きだけを出力してください。\n\n"
-                + context + partial;
+            prompt = (context != null ? context : "") + partial;
         } else {
-            prompt = "以下の文章の続きを書いてください。続きだけを出力してください。\n\n"
-                + context;
+            prompt = (context != null ? context : "");
         }
         messages.add(new ChatCompletionRequest.Message("user", prompt));
 
